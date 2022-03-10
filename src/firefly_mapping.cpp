@@ -3,6 +3,7 @@
 #include <eigen_conversions/eigen_msg.h>
 #include <nav_msgs/OccupancyGrid.h>
 #include <std_msgs/UInt8MultiArray.h>
+#include <chrono>
 
 
 class FireflyMapping {
@@ -13,8 +14,8 @@ public:
         map_pub = nh.advertise<nav_msgs::OccupancyGrid>("observed_firemap", 10);
 
         K_inv << 1.0/fx,  0.0,    -cx/fx,
-                0.0,     1.0/fy, -cy/fy,
-                0.0,     0.0,     1.0;
+                 0.0,     1.0/fy, -cy/fy,
+                 0.0,     0.0,     1.0;
 
         map.header.frame_id = "world";
         map.info.resolution = 0.5;
@@ -22,9 +23,9 @@ public:
         map.info.height = 400; //Number of Cells
         map.info.origin.position.x = -100; //In meters
         map.info.origin.position.y = -100; //In meters
-        map.data = std::vector<std::int8_t> (400*400, -1);
+        map.data = std::vector<std::int8_t> (400*400, 50); // Initialize map to 50 percent certainty
 
-        std::cout << "Hello There" << std::endl;
+
     }
 
 private:
@@ -48,30 +49,34 @@ private:
     float minY = -100;
     float maxY = 100;
 
+    float fpr = 0.05; // False positives divided by all negative cases
+    float fnr = 0.05; // False negatives divided by all positive cases
+    float tpr = 1 - fnr; // True positives divided by all positives
+    float tnr = 1 - fpr; // True negatives divided by all negatives
+
     Eigen::Matrix3d K_inv;
 
     void project_image(const firefly_mapping::ImageWithPose& msg) {
+        auto start = std::chrono::high_resolution_clock::now();
         Eigen::Quaterniond cam_quat;
         tf::quaternionMsgToEigen(msg.pose.orientation, cam_quat);
 
+        Eigen::Matrix3d pixelToRay = cam_quat.matrix() * K_inv;
+        Eigen::Vector3d camCenter {msg.pose.position.x, msg.pose.position.y, msg.pose.position.z};
+
+        float camCenterGroundDist = ground_offset - ground_normal.dot(camCenter);
+
+        std::cout << "Projecting and filtering!" << std::endl;
+
         for (size_t i = 0; i < msg.image.width; i++) {
             for (size_t j = 0; j < msg.image.height; j++) {
-                uint8_t pixelValue = msg.image.data[i + j * msg.image.width];
-//                if (pixelValue == 0) {
-//                    continue;
-//                }
                 Eigen::Vector3d pixelHomogenous{i, j, 1};
-
-                Eigen::Vector3d rayDir = cam_quat.matrix() * K_inv * pixelHomogenous;
-                Eigen::Vector3d camCenter {msg.pose.position.x, msg.pose.position.y, msg.pose.position.z};
+                Eigen::Vector3d rayDir = pixelToRay * pixelHomogenous;
 
                 float rayPerpendicularComponent = ground_normal.dot(rayDir);
-
                 if (rayPerpendicularComponent >= 0) {
                     continue;
                 }
-
-                float camCenterGroundDist = ground_offset - ground_normal.dot(camCenter);
 
                 float rayLambda = camCenterGroundDist / rayPerpendicularComponent;
 
@@ -87,19 +92,28 @@ private:
                 size_t gridRow = (size_t) ((intersect(1)-minY)/resolution);
                 size_t gridCol = (size_t) ((intersect(0)-minX)/resolution);
 
+                int mapBin = gridCol + gridRow * map.info.width;
+                uint8_t pixelValue = msg.image.data[i + j * msg.image.width];
+                std::int8_t prior = map.data[mapBin];
+
                 if (pixelValue == 0) {
-                    map.data[gridCol + gridRow * map.info.width] = 0;
+                    float probOfNegative = (fnr * prior + tnr * (100 - prior))/100.0;
+                    uint8_t posterior = (fnr/probOfNegative) * prior;
+                    map.data[mapBin] = posterior;
                 }
                 else {
-                    map.data[gridCol + gridRow * map.info.width] = 100;
+                    float probOfPositive = (tpr * prior + fpr * (100 - prior))/100.0;
+                    uint8_t posterior = (tpr/probOfPositive) * prior;
+                    map.data[mapBin] = posterior;
                 }
 
             }
         }
 
-        for (int i = 0; i < 100; i++) {
-            map.data[i] = 100;
-        }
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+        std::cout << "Projection of single image took: " << duration.count() << " milliseconds" << std::endl;
+
         map_pub.publish(map);
         return;
     }
