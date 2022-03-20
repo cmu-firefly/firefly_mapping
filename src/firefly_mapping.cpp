@@ -3,7 +3,9 @@
 #include <eigen_conversions/eigen_msg.h>
 #include <nav_msgs/OccupancyGrid.h>
 #include <std_msgs/UInt8MultiArray.h>
+#include <std_msgs/Int32MultiArray.h>
 #include <chrono>
+#include <unordered_set>
 
 
 class FireflyMapping {
@@ -12,36 +14,44 @@ public:
     FireflyMapping() {
         image_sub = nh.subscribe("image_to_project", 1000, &FireflyMapping::project_image, this);
         map_pub = nh.advertise<nav_msgs::OccupancyGrid>("observed_firemap", 10);
+        new_fire_pub = nh.advertise<std_msgs::Int32MultiArray>("new_fire_bins", 10);
+        new_no_fire_pub = nh.advertise<std_msgs::Int32MultiArray>("new_no_fire_bins", 10);
 
         K_inv << 1.0/fx,  0.0,    -cx/fx,
                  0.0,     1.0/fy, -cy/fy,
                  0.0,     0.0,     1.0;
 
-        map.header.frame_id = "world";
-        map.info.resolution = 0.5;
-        map.info.width = 400; //Number of Cells
-        map.info.height = 400; //Number of Cells
-        map.info.origin.position.x = -100; //In meters
-        map.info.origin.position.y = -100; //In meters
-        map.data = std::vector<std::int8_t> (400*400, 50); // Initialize map to 50 percent certainty
-
-
+        outputMap.header.frame_id = "world";
+        outputMap.info.resolution = 0.5;
+        outputMap.info.width = 400; //Number of Cells
+        outputMap.info.height = 400; //Number of Cells
+        outputMap.info.origin.position.x = -100; //In meters
+        outputMap.info.origin.position.y = -100; //In meters
+        outputMap.data = std::vector<std::int8_t> (400*400, 50); // Initialize map to 50 percent certainty
+        map = std::vector<float> (400*400, 0.5); // Initialize map to 50 percent certainty
+//        telemMap = std::vector<int> (400*400, -1); // -1 = Occupied, 0 = free, 1 = fire
     }
 
 private:
     ros::NodeHandle nh;
     ros::Subscriber image_sub;
-    ros::Publisher map_pub;
+    ros::Publisher map_pub, new_fire_pub, new_no_fire_pub;
 
-    nav_msgs::OccupancyGrid map;
+    nav_msgs::OccupancyGrid outputMap;
+    std::vector<float> map; // Internal map representation
+//    std::vector<int> telemMap; //Map to transmit to ground station
 
     Eigen::Vector3d ground_normal{0, 0, 1}; //Should point up from ground - if pointing into ground, will cause errors
     float ground_offset = 0;
 
-    float fx = 411.3366;
-    float fy = 412.6712;
-    float cx = 320.4049;
-    float cy = 251.967;
+//    float fx = 411.3366;
+//    float fy = 412.6712;
+//    float cx = 320.4049;
+//    float cy = 251.967;
+    float fx = 317.1595;
+    float fy = 324.8607;
+    float cx = 100;
+    float cy = 75;
 
     float resolution = 0.5;
     float minX = -100;
@@ -68,6 +78,9 @@ private:
 
         std::cout << "Projecting and filtering!" << std::endl;
 
+        std::unordered_set<int> new_fire_bins;
+        std::unordered_set<int> new_no_fire_bins;
+
         for (size_t i = 0; i < msg.image.width; i++) {
             for (size_t j = 0; j < msg.image.height; j++) {
                 Eigen::Vector3d pixelHomogenous{i, j, 1};
@@ -92,29 +105,53 @@ private:
                 size_t gridRow = (size_t) ((intersect(1)-minY)/resolution);
                 size_t gridCol = (size_t) ((intersect(0)-minX)/resolution);
 
-                int mapBin = gridCol + gridRow * map.info.width;
+                int mapBin = gridCol + gridRow * outputMap.info.width;
                 uint8_t pixelValue = msg.image.data[i + j * msg.image.width];
-                std::int8_t prior = map.data[mapBin];
+                float prior = map[mapBin];
 
                 if (pixelValue == 0) {
-                    float probOfNegative = (fnr * prior + tnr * (100 - prior))/100.0;
-                    uint8_t posterior = (fnr/probOfNegative) * prior;
-                    map.data[mapBin] = posterior;
+                    float probOfNegative = fnr * prior + tnr * (1 - prior);
+                    float posterior = (fnr/probOfNegative) * prior;
+                    map[mapBin] = posterior;
+                    outputMap.data[mapBin] = posterior*100;
+
+                    if ((prior >= 0.5) && (posterior < 0.5)) { // If bin changed value
+                        new_fire_bins.erase(mapBin);
+                        new_no_fire_bins.insert(mapBin);
+                    }
                 }
                 else {
-                    float probOfPositive = (tpr * prior + fpr * (100 - prior))/100.0;
-                    uint8_t posterior = (tpr/probOfPositive) * prior;
-                    map.data[mapBin] = posterior;
+                    float probOfPositive = tpr * prior + fpr * (1 - prior);
+                    float posterior = (tpr/probOfPositive) * prior;
+                    map[mapBin] = posterior;
+                    outputMap.data[mapBin] = posterior*100;
+
+                    if ((prior <= 0.5) && (posterior > 0.5)) { // If bin changed value
+                        new_no_fire_bins.erase(mapBin);
+                        new_fire_bins.insert(mapBin);
+                    }
                 }
 
             }
         }
 
+        std_msgs::Int32MultiArray new_fire_bins_msg;
+        for (int bin: new_fire_bins) {
+            new_fire_bins_msg.data.push_back(bin);
+        }
+        new_fire_pub.publish(new_fire_bins_msg);
+
+        std_msgs::Int32MultiArray new_no_fire_bins_msg;
+        for (int bin: new_no_fire_bins) {
+            new_no_fire_bins_msg.data.push_back(bin);
+        }
+        new_no_fire_pub.publish(new_no_fire_bins_msg);
+
         auto end = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
         std::cout << "Projection of single image took: " << duration.count() << " milliseconds" << std::endl;
 
-        map_pub.publish(map);
+        map_pub.publish(outputMap);
         return;
     }
 };

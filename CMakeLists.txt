@@ -37,3 +37,7 @@ add_executable(firefly_mapping src/firefly_mapping.cpp)
 add_dependencies(firefly_mapping ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(firefly_mapping ${catkin_LIBRARIES})
 
+add_executable(gcs_mapping src/gcs_mapping.cpp)
+add_dependencies(gcs_mapping ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(gcs_mapping ${catkin_LIBRARIES})
+
