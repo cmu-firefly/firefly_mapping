@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import rospy
 from firefly_mapping.msg import ImageWithPose
 from sensor_msgs.msg import Image
