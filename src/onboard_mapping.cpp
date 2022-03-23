@@ -4,18 +4,22 @@
 #include <nav_msgs/OccupancyGrid.h>
 #include <std_msgs/UInt8MultiArray.h>
 #include <std_msgs/Int32MultiArray.h>
+#include <std_srvs/Empty.h>
+#include <std_msgs/Empty.h>
 #include <chrono>
 #include <unordered_set>
 
 
-class FireflyMapping {
+class OnboardMapping {
 
 public:
-    FireflyMapping() {
-        image_sub = nh.subscribe("image_to_project", 1000, &FireflyMapping::project_image, this);
+    OnboardMapping() {
+        image_sub = nh.subscribe("image_to_project", 1000, &OnboardMapping::project_image, this);
         map_pub = nh.advertise<nav_msgs::OccupancyGrid>("observed_firemap", 10);
         new_fire_pub = nh.advertise<std_msgs::Int32MultiArray>("new_fire_bins", 10);
         new_no_fire_pub = nh.advertise<std_msgs::Int32MultiArray>("new_no_fire_bins", 10);
+//        clear_srv = nh.advertiseService("clear_map", &OnboardMapping::clear, this);
+        clear_sub = nh.subscribe("clear_map", 1000, &OnboardMapping::clear, this);
 
         K_inv << 1.0/fx,  0.0,    -cx/fx,
                  0.0,     1.0/fy, -cy/fy,
@@ -29,17 +33,18 @@ public:
         outputMap.info.origin.position.y = -100; //In meters
         outputMap.data = std::vector<std::int8_t> (400*400, 50); // Initialize map to 50 percent certainty
         map = std::vector<float> (400*400, 0.5); // Initialize map to 50 percent certainty
-//        telemMap = std::vector<int> (400*400, -1); // -1 = Occupied, 0 = free, 1 = fire
+        map_pub.publish(outputMap);
     }
 
 private:
     ros::NodeHandle nh;
     ros::Subscriber image_sub;
     ros::Publisher map_pub, new_fire_pub, new_no_fire_pub;
+//    ros::ServiceServer clear_srv;
+    ros::Subscriber clear_sub;
 
     nav_msgs::OccupancyGrid outputMap;
     std::vector<float> map; // Internal map representation
-//    std::vector<int> telemMap; //Map to transmit to ground station
 
     Eigen::Vector3d ground_normal{0, 0, 1}; //Should point up from ground - if pointing into ground, will cause errors
     float ground_offset = 0;
@@ -154,10 +159,24 @@ private:
         map_pub.publish(outputMap);
         return;
     }
+
+//    bool clear(std_srvs::Empty::Request &req, std_srvs::Empty::Response &res) {
+//        std::cout << "Clearing Map" << std::endl;
+//        outputMap.data = std::vector<std::int8_t> (400*400, 50); // Set map to 50 percent certainty
+//        map = std::vector<float> (400*400, 0.5); // Set map to 50 percent certainty
+//        map_pub.publish(outputMap);
+//        return true;
+//    }
+    void clear(const std_msgs::Empty &empty_msg) {
+        std::cout << "Clearing Map" << std::endl;
+        outputMap.data = std::vector<std::int8_t> (400*400, 50); // Set map to 50 percent certainty
+        map = std::vector<float> (400*400, 0.5); // Set map to 50 percent certainty
+        map_pub.publish(outputMap);
+    }
 };
 int main(int argc, char** argv) {
     ros::init(argc, argv, "firefly_mapping");
-    FireflyMapping node;
+    OnboardMapping node;
     ros::spin();
     return 0;
 }

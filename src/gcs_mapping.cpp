@@ -1,11 +1,9 @@
 #include "ros/ros.h"
-#include "firefly_mapping/ImageWithPose.h"
-#include <eigen_conversions/eigen_msg.h>
 #include <nav_msgs/OccupancyGrid.h>
 #include <std_msgs/UInt8MultiArray.h>
 #include <std_msgs/Int32MultiArray.h>
 #include <chrono>
-#include <unordered_set>
+#include <std_msgs/Empty.h>
 
 
 class GCSMapping {
@@ -16,6 +14,7 @@ public:
         new_no_fire_sub = nh.subscribe("new_no_fire_bins", 1000, &GCSMapping::new_no_fire_bins_callback, this);
         map_pub = nh.advertise<nav_msgs::OccupancyGrid>("observed_firemap", 10);
         map_pub_timer = nh.createTimer(ros::Duration(1.0), &GCSMapping::publish_map_callback, this);
+        clear_sub = nh.subscribe("clear_map", 1000, &GCSMapping::clear, this);
 
         outputMap.header.frame_id = "world";
         outputMap.info.resolution = 0.5;
@@ -31,6 +30,7 @@ private:
     ros::Subscriber new_fire_sub, new_no_fire_sub;
     ros::Publisher map_pub;
     ros::Timer map_pub_timer;
+    ros::Subscriber clear_sub;
 
     nav_msgs::OccupancyGrid outputMap;
 
@@ -55,6 +55,12 @@ private:
             map_pub.publish(outputMap);
             new_update = false;
         }
+    }
+
+    void clear(const std_msgs::Empty &empty_msg) {
+        std::cout << "Clearing Map" << std::endl;
+        outputMap.data = std::vector<std::int8_t> (400*400, 50); // Set map to 50 percent certainty
+        map_pub.publish(outputMap);
     }
 
 };
